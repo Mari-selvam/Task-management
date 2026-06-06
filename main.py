@@ -1,8 +1,16 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import List
 import sqlite3
 import uuid
+import logging
+import time
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Task Manager API")
 
@@ -26,9 +34,19 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    logger.info("Database initialised")
 
 
 init_db()
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = round((time.time() - start) * 1000)
+    logger.info("%s %s %s %dms", request.method, request.url.path, response.status_code, duration_ms)
+    return response
 
 
 class TaskCreate(BaseModel):
@@ -48,6 +66,7 @@ def create_task(body: TaskCreate):
     conn.execute("INSERT INTO tasks (id, title, done) VALUES (?, ?, 0)", (task_id, body.title))
     conn.commit()
     conn.close()
+    logger.info("Created task %s: %s", task_id, body.title)
     return Task(id=task_id, title=body.title, done=False)
 
 
@@ -56,6 +75,7 @@ def list_tasks():
     conn = get_db()
     rows = conn.execute("SELECT id, title, done FROM tasks").fetchall()
     conn.close()
+    logger.info("Listed %d tasks", len(rows))
     return [Task(id=row["id"], title=row["title"], done=bool(row["done"])) for row in rows]
 
 
@@ -65,10 +85,12 @@ def complete_task(task_id: str):
     row = conn.execute("SELECT id, title, done FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if not row:
         conn.close()
+        logger.warning("complete_task: task %s not found", task_id)
         raise HTTPException(status_code=404, detail="Task not found")
     conn.execute("UPDATE tasks SET done = 1 WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
+    logger.info("Completed task %s", task_id)
     return Task(id=row["id"], title=row["title"], done=True)
 
 
@@ -78,8 +100,10 @@ def delete_task(task_id: str):
     row = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
     if not row:
         conn.close()
+        logger.warning("delete_task: task %s not found", task_id)
         raise HTTPException(status_code=404, detail="Task not found")
     conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     conn.commit()
     conn.close()
+    logger.info("Deleted task %s", task_id)
     return {"deleted": task_id}
